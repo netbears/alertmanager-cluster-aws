@@ -1,0 +1,514 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  This template creates an Alertmanager cluster using Amazon EC2 AutoScaling groups.
+  
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: ASG cluster configuration
+        Parameters:
+          - AsgMaxSize
+          - AsgMinSize
+          - SubnetList
+          - VpcId
+          - InstanceType
+          - Ami
+          - KeyName
+
+      - Label:
+          default: Alertmanager configuration
+        Parameters:
+          - AlertmanagerVersion
+          - Environment
+          - Exposure
+          - HostedZoneId
+          - DnsName
+          - UseSsl
+          - CertificateArn
+          - AlertmanagerConfigurationPathS3
+          - AlertmanagerAlertsPathS3
+          - ConsulEndpoint
+          - UseConsulTemplateToGenerateFile
+          - AlertsGcInterval
+          - LogLevel
+
+    ParameterLabels:
+      Ami:
+        default: The AMI used to start the cluster instances
+      AsgMaxSize:
+        default: The maximum number of instances to launch
+      AsgMinSize:
+        default: The minimum number of instances to keep in service
+      SubnetList:
+        default: The subnets in which the instances can run
+      VpcId:
+        default: The VPC to which the subnets belong
+      AlertmanagerVersion:
+        default: The Alertmanager version to launch
+      Environment:
+        default: The environment for which the Alertmanager cluster will scrape targets
+      InstanceType:
+        default: The instance size to use for the Alertmanager cluster
+      KeyName:
+        default: The SSH key to use for booting up the instances
+      Exposure:
+        default: Whether to set the Alertmanager load balancer as internet-facing or internal
+      HostedZoneId:
+        default: The Hosted Zone ID to use in Route53 to expose the Alertmanager DnsName
+      DnsName:
+        default: The value of the Alertmanager hostname
+      UseSsl:
+        default: Whether to use SSL when connecting via load balancer
+      CertificateArn:
+        default: The Certificate ARN to use when UseSsl is set to "true"
+      AlertmanagerConfigurationPathS3:
+        default: The path to your Alertmanager configuration (alertmanager.yaml)
+      ConsulEndpoint:
+        default: The consul endpoint to connect to for configuration details
+      UseConsulTemplateToGenerateFile:
+        default: Whether to use consul-template to generate file
+      AlertsGcInterval:
+        default: The interval in which to remind of critical alerts (default is 30 minutes)
+      LogLevel:
+        default: The log level (default is info)
+      
+Parameters:
+  Ami:
+    Type: String
+    Default: ami-013be31976ca2c322
+    Description: For optimal performance, use the latest Amazon Linux AMI (HVM) available
+  AsgMaxSize:
+    Type: Number
+    Default: 6
+  AsgMinSize:
+    Type: Number
+    Default: 4
+  SubnetList:
+    Type: List<AWS::EC2::Subnet::Id>
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+  AlertmanagerVersion:
+    Type: String
+    Default: '0.15.3'
+  AlertmanagerConfigurationPathS3:
+    Type: String
+    Default: s3://netbears-alertmanager/alertmanager.yaml
+  Environment:
+    Type: String
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+    Default: dev
+  KeyName:
+    Type: AWS::EC2::KeyPair::KeyName
+  Exposure:
+    Type: String
+    AllowedValues:
+    - internet-facing
+    - internal
+    Default: internet-facing
+  HostedZoneId:
+    Type: AWS::Route53::HostedZone::Id
+  DnsName:
+    Type: String
+    Default: alertmanager.aws.netbears.com
+  ConsulEndpoint:
+    Type: String
+    Default: consul.aws.netbears.com
+  UseConsulTemplateToGenerateFile:
+    Type: String
+    Default: 'false'
+    AllowedValues:
+    - 'true'
+    - 'false'
+  AlertsGcInterval:
+    Type: String
+    Default: 30m
+  LogLevel:
+    Type: String
+    Default: info
+  UseSsl:
+    Type: String
+    AllowedValues:
+    - true
+    - false
+    Default: true
+  CertificateArn:
+    Type: String
+  InstanceType:
+    Type: String
+    AllowedValues:
+    - m5.large
+    - m5.xlarge
+    - m5.2xlarge
+    - m5.4xlarge
+    - m5.12xlarge
+    - m5.24xlarge
+    - m4.large
+    - m4.xlarge
+    - m4.2xlarge
+    - m4.4xlarge
+    - m4.10xlarge
+    - m4.16xlarge
+    - c5.large
+    - c5.xlarge
+    - c5.2xlarge
+    - c5.4xlarge
+    - c5.9xlarge
+    - c5.18xlarge
+    - c4.large
+    - c4.xlarge
+    - c4.2xlarge
+    - c4.4xlarge
+    - c4.8xlarge
+    - g3.4xlarge
+    - g3.8xlarge
+    - g3.16xlarge
+    - g2.2xlarge
+    - g2.8xlarge
+    - r4.large
+    - r4.xlarge
+    - r4.2xlarge
+    - r4.4xlarge
+    - r4.8xlarge
+    - r4.16xlarge
+    - d2.xlarge
+    - d2.2xlarge
+    - d2.4xlarge
+    - d2.8xlarge
+    - i3.large
+    - i3.xlarge
+    - i3.2xlarge
+    - i3.4xlarge
+    - i3.8xlarge
+    - i3.16xlarge
+    - i2.xlarge
+    - i2.2xlarge
+    - i2.4xlarge
+    - i2.8xlarge
+
+Conditions:
+  LoadBalancerSsl: 
+    Fn::Equals:
+      - Ref: UseSsl
+      - true
+
+Resources: 
+  HostRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+      - arn:aws:iam::aws:policy/AmazonEC2ReadOnlyAccess
+      - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+
+  HostProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles:
+      - Ref: HostRole
+
+  Sg:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription:
+        Fn::Sub: ${AWS::StackName}-Sg
+      VpcId:
+        Ref: VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: udp
+        FromPort: 0
+        ToPort: 65535
+        CidrIp: 0.0.0.0/0
+
+  ASG:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier:
+        Ref: SubnetList
+      HealthCheckGracePeriod: '600'
+      HealthCheckType: EC2
+      LoadBalancerNames:
+        - Ref: AlertmanagerElb
+      LaunchConfigurationName:
+        Ref: Lc
+      MinSize:
+        Ref: AsgMinSize
+      MaxSize:
+        Ref: AsgMaxSize
+      DesiredCapacity:
+        Ref: AsgMinSize
+      Tags:
+      - Key: Name
+        Value:
+          Fn::Sub: AlertmanagerASG-${AWS::StackName}
+        PropagateAtLaunch: true
+      - Key: Team
+        Value: NETBEARS
+        PropagateAtLaunch: true
+      - Key: Application
+        Value: Alertmanager
+        PropagateAtLaunch: true
+      - Key: Environment
+        Value:
+          Ref: Environment
+        PropagateAtLaunch: true
+      - Key: StackName
+        Value:
+          Ref: AWS::StackName
+        PropagateAtLaunch: true
+      MetricsCollection:
+      - Metrics:
+        - GroupTotalInstances
+        Granularity: 1Minute
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MinInstancesInService:
+          Ref: AsgMinSize
+        MaxBatchSize: 1
+        PauseTime: PT10M
+        SuspendProcesses:
+        - AZRebalance
+        - AlarmNotification
+        - HealthCheck
+        - ReplaceUnhealthy
+        - ScheduledActions
+
+  Lc:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:
+        Ref: Ami
+      EbsOptimized: true
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvda
+        Ebs:
+          VolumeType: gp2
+          VolumeSize: 100
+      InstanceType:
+        Ref: InstanceType
+      IamInstanceProfile:
+        Ref: HostProfile
+      KeyName:
+        Ref: KeyName
+      SecurityGroups:
+      - Ref: Sg
+      UserData:
+        Fn::Base64:
+          Fn::Sub: |
+            #cloud-config
+            packages:
+            - aws-cli
+            - jq
+            - ntp
+            - curl
+            - git
+            - gcc
+            - wget
+            - python27-devel
+            - python27-pip
+            - net-tools
+            - bind-tools
+            - htop
+            - zip
+            - unzip
+            write_files:
+            - path: /etc/alertmanager/start.sh
+              content: |
+                #!/usr/bin/env bash
+                if [ "${UseConsulTemplateToGenerateFile}" == "false" ]; then
+                  aws s3 cp ${AlertmanagerConfigurationPathS3} /etc/alertmanager/alertmanager.yaml
+                  /usr/local/bin/alertmanager \
+                      --config.file=/etc/alertmanager/alertmanager.yaml \
+                      --storage.path=/alertmanager \
+                      --alerts.gc-interval=${AlertsGcInterval} \
+                      --web.external-url=http://${DnsName} \
+                      --log.level=${LogLevel}
+                else
+                  aws s3 cp ${AlertmanagerConfigurationPathS3} /etc/alertmanager/alertmanager.yaml.ctmpl
+                  /usr/local/bin/consul-template \
+                    -config "/etc/consul-template.d/consul_template_config.hcl" \
+                    -exec "/usr/local/bin/alertmanager \
+                      --config.file=/etc/alertmanager/alertmanager.yaml \
+                      --storage.path=/alertmanager \
+                      --alerts.gc-interval=${AlertsGcInterval} \
+                      --web.external-url=http://${DnsName} \
+                      --log.level=${LogLevel}"
+                fi
+              permissions: '0755'
+            - path: /etc/consul-template.d/consul_template_config.hcl
+              content: |
+                {
+                  "consul": {
+                    "auth": {
+                      "enabled": false
+                    },
+                    "address": "${ConsulEndpoint}:8500",
+                    "retry": {
+                      "enabled": true,
+                      "attempts": 12,
+                      "backoff": "250ms",
+                      "max_backoff": "1m"
+                    },
+                    "ssl": {
+                      "enabled": false
+                    }
+                  },
+                  "reload_signal": "SIGHUP",
+                  "kill_signal": "SIGINT",
+                  "max_stale": "10m",
+                  "log_level": "warn",
+                  "wait": {
+                    "min": "5s",
+                    "max": "10s"
+                  },
+                  "deduplicate": {
+                    "enabled": true,
+                    "prefix": "consul-template/dedup/alertmanager/${AlertmanagerVersion}"
+                  },
+                  "template": [
+                    {
+                      "source": "/etc/alertmanager/alertmanager.yaml.ctmpl",
+                      "destination": "/etc/alertmanager/alertmanager.yaml",
+                      "command_timeout": "30s",
+                      "perms": "0644",
+                      "backup": true,
+                      "left_delimiter": "{{",
+                      "right_delimiter": "}}",
+                      "wait": {
+                        "min": "2s",
+                        "max": "10s"
+                      }
+                    }
+                  ]
+                }
+              permissions: '0644'
+            runcmd:
+            - mkdir -p /alertmanager
+            - mkdir -p /etc/alertmanager
+            - mkdir -p /etc/consul-template.d
+            - wget https://github.com/prometheus/alertmanager/releases/download/v${AlertmanagerVersion}/alertmanager-${AlertmanagerVersion}.linux-amd64.tar.gz
+            - tar xzf alertmanager-${AlertmanagerVersion}.linux-amd64.tar.gz
+            - cp alertmanager-${AlertmanagerVersion}.linux-amd64/alertmanager /usr/local/bin/alertmanager
+            - chmod +x /usr/local/bin/alertmanager
+            - wget https://github.com/alertmanager/node_exporter/releases/download/v0.16.0/node_exporter-0.16.0.linux-amd64.tar.gz
+            - tar xvf node_exporter-0.16.0.linux-amd64.tar.gz
+            - cp node_exporter-0.16.0.linux-amd64/node_exporter /usr/local/bin
+            - chmod +x /usr/local/bin/node_exporter
+            - /usr/local/bin/node_exporter &
+            - wget https://releases.hashicorp.com/consul-template/0.19.0/consul-template_0.19.0_linux_amd64.zip
+            - unzip consul-template_0.19.0_linux_amd64.zip
+            - cp consul-template /usr/local/bin/consul-template
+            - chmod +x /usr/local/bin/consul-template
+            - /etc/alertmanager/start.sh
+            
+  CpuUtilizationTargetTracking:
+    Type: AWS::AutoScaling::ScalingPolicy
+    Properties:
+      AutoScalingGroupName:
+        Ref: ASG
+      PolicyType: TargetTrackingScaling
+      TargetTrackingConfiguration:
+        TargetValue: 70
+        PredefinedMetricSpecification:
+          PredefinedMetricType: ASGAverageCPUUtilization
+
+  AlertmanagerElb:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      ConnectionSettings:
+        IdleTimeout: 70
+      HealthCheck:
+        HealthyThreshold: 3
+        Interval: 5
+        Target: HTTP:9093/
+        Timeout: 3
+        UnhealthyThreshold: 2
+      Listeners:
+      - InstancePort: 9093
+        LoadBalancerPort: 80
+        Protocol: HTTP
+      - InstancePort: 9093
+        LoadBalancerPort: 9093
+        Protocol: HTTP
+      - Fn::If:
+        - LoadBalancerSsl
+        - InstancePort: 9093
+          LoadBalancerPort: 443
+          Protocol: HTTPS
+          SSLCertificateId:
+            Ref: CertificateArn
+        - Ref: AWS::NoValue
+      Scheme:
+        Ref: Exposure
+      SecurityGroups:
+      - Ref: Sg
+      Subnets:
+        Ref: SubnetList
+      Tags:
+      - Key: Team
+        Value: NETBEARS
+      - Key: Application
+        Value: Alertmanager
+      - Key: Environment
+        Value:
+          Ref: Environment
+      - Key: StackName
+        Value:
+          Ref: AWS::StackName
+
+  AlertmanagerDnsRecord:
+    Type: AWS::Route53::RecordSetGroup
+    Properties:
+      HostedZoneId:
+        Ref: HostedZoneId
+      Comment: 
+        Fn::Sub: Route53-record-for-${AWS::StackName}.
+      RecordSets:
+      - Name:
+          Ref: DnsName
+        Type: A
+        AliasTarget:
+          HostedZoneId:
+            Fn::GetAtt: AlertmanagerElb.CanonicalHostedZoneNameID
+          DNSName:
+            Fn::GetAtt: AlertmanagerElb.DNSName
+
+Outputs:
+
+  ConsulUi:
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-AlertmanagerDnsRecord
+    Value:
+      Fn::If:
+        - LoadBalancerSsl
+        - Fn::Sub: https://${DnsName}/#/status
+        - Fn::Sub: http://${DnsName}/#/status
+
+  AlertmanagerElbCanonicalHostedZoneNameID:
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-AlertmanagerElbCanonicalHostedZoneNameID
+    Value:
+      Fn::GetAtt: AlertmanagerElb.CanonicalHostedZoneNameID
+
+  AlertmanagerElbDNSName:
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-AlertmanagerElbDNSName
+    Value:
+      Fn::GetAtt: AlertmanagerElb.DNSName

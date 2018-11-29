@@ -1,0 +1,92 @@
+{{- $pagerduty_key := "pagerduty" -}}
+{{- $email_key := "email" -}}
+{{- $application_name := "alertmanager" -}}
+{{- $root_key := "microservices/configuration" }}
+
+{{- with $d := key (printf "infrastructure/%s/config.json" $application_name) | parseJSON }}
+{{ $d.config.config_global | toYAML }}
+{{ $d.config.config_templates | toYAML }}
+{{ $d.config.config_route | toYAML }}
+  routes:
+  # This routes performs a regular expression match on alert labels to
+  # catch alerts that are related to a list of services.
+  {{- range $service_key, $pairs := tree "microservices/configuration" | byKey }}
+  {{- if keyExists (printf "%s/%s/%s/enabled" $root_key $service_key $application_name) }}
+  {{- if eq (key (printf "%s/%s/%s/enabled" $root_key $service_key $application_name)) "true" }}
+  - match:
+      microservice: {{ $service_key }}
+    receiver: service-{{- $service_key }}
+    continue: true
+    {{- if or (keyExists (printf "%s/%s/%s/critical.type" $root_key $service_key $application_name)) (keyExists (printf "%s/%s/%s/warning.type" $root_key $service_key $application_name)) }}
+    routes:
+    {{- end }}
+      {{- if keyExists (printf "%s/%s/%s/critical.type" $root_key $service_key $application_name) }}
+      - match:
+          severity: critical
+        receiver: service-{{- $service_key -}}-critical
+      {{- end }}
+      {{- if keyExists (printf "%s/%s/%s/warning.type" $root_key $service_key $application_name) }}
+      - match:
+          severity: warning
+        receiver: service-{{- $service_key -}}-warning
+      {{- end }}{{- end }}{{ end }}{{ end }}
+{{ $d.config.config_inhibit_rules | toYAML }}
+{{ $d.config.default_receivers | toYAML }}
+{{- end }}
+{{- range $service_key, $pairs := tree "microservices/configuration" | byKey }}
+{{- if keyExists (printf "%s/%s/%s/enabled" $root_key $service_key $application_name)}} 
+{{- if eq (key (printf "%s/%s/%s/enabled" $root_key $service_key $application_name)) "true" }}
+- name: service-{{- $service_key }}
+{{- if keyExists (printf "%s/%s/%s/global.type" $root_key $service_key $application_name)}} 
+{{- if eq (key (printf "%s/%s/%s/global.type" $root_key $service_key $application_name)) $email_key }}
+  email_configs:
+{{- if keyExists (printf "%s/%s/%s/global.value" $root_key $service_key $application_name) }}
+  - to: {{ key (printf "%s/%s/%s/global.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - to: not_defined
+{{ end }}
+{{- else if eq (key (printf "%s/%s/%s/global.type" $root_key $service_key $application_name)) $pagerduty_key }}
+  pagerduty_configs:
+{{- if keyExists (printf "%s/%s/%s/global.value" $root_key $service_key $application_name) }}
+  - service_key: {{ key (printf "%s/%s/%s/global.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - service_key: not_defined
+{{ end }}{{ end }}
+{{ else }}
+  pagerduty_configs:
+  - service_key: not_defined
+{{- end -}}
+{{- if keyExists (printf "%s/%s/%s/critical.type" $root_key $service_key $application_name) -}}
+{{- if eq (key (printf "%s/%s/%s/critical.type" $root_key $service_key $application_name)) $email_key -}}
+- name: service-{{- $service_key }}-critical
+  email_configs:
+{{- if keyExists (printf "%s/%s/%s/critical.value" $root_key $service_key $application_name) }}
+  - to: {{ key (printf "%s/%s/%s/critical.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - to: not_defined
+{{ end }}
+{{- else if eq (key (printf "%s/%s/%s/critical.type" $root_key $service_key $application_name)) $pagerduty_key -}}
+- name: service-{{- $service_key }}-critical
+  pagerduty_configs:
+{{- if keyExists (printf "%s/%s/%s/critical.value" $root_key $service_key $application_name) }}
+  - service_key: {{ key (printf "%s/%s/%s/critical.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - service_key: not_defined
+{{- end }}{{- end }}{{- end }}
+{{- if keyExists (printf "%s/%s/%s/warning.type" $root_key $service_key $application_name) -}}
+{{- if eq (key (printf "%s/%s/%s/warning.type" $root_key $service_key $application_name)) $email_key -}}
+- name: service-{{- $service_key }}-warning
+  email_configs:
+{{- if keyExists (printf "%s/%s/%s/warning.value" $root_key $service_key $application_name) }}
+  - to: {{ key (printf "%s/%s/%s/warning.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - to: not_defined
+{{ end }}
+{{- else if eq (key (printf "%s/%s/%s/warning.type" $root_key $service_key $application_name)) $pagerduty_key -}}
+- name: service-{{- $service_key }}-warning
+  pagerduty_configs:
+{{- if keyExists (printf "%s/%s/%s/warning.value" $root_key $service_key $application_name) }}
+  - service_key: {{ key (printf "%s/%s/%s/warning.value" $root_key $service_key $application_name) }}
+{{ else }}
+  - service_key: not_defined
+{{- end -}}{{- end -}}{{- end -}}{{- end -}}{{- end -}}{{- end -}}

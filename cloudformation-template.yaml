@@ -530,7 +530,7 @@ Resources:
 
 Outputs:
 
-  ConsulUi:
+  AlertmanagerUi:
     Export:
       Name:
         Fn::Sub: ${AWS::StackName}-AlertmanagerDnsRecord
